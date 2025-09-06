@@ -1,4 +1,3 @@
-
 import os
 import re
 import random
@@ -6,167 +5,173 @@ import string
 import urllib.request
 import time
 import logging
+from pathlib import Path
+import sys
 
-# Creates a folder in "location" to store the pictures and the modified files (local link to imgs)
+# --- Настройка логирования ---
+logging.basicConfig(
+    filename='Img_To_Local_Python.log',
+    filemode="w",
+    encoding='utf-8',
+    level=logging.DEBUG,
+    format='%(asctime)s %(levelname)s: %(message)s'
+)
 
-class FolderCreator:
-    def __init__(self, location = ".."):
-        self.location = location
+# --- Конфигурация ---
+FOLDER_NAME = "External_Imgs_to_Local_Files"
+USER_AGENT = "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:40.0) Gecko/20100101 Firefox/40.1"
 
-    def create_folder(self, name):
-        self.name = name
-        self.folder = self.location + "/" + self.name
-        if not os.path.exists(self.folder):
-            os.mkdir(self.folder)
+# --- Папки (создадим в родительской папке текущей) ---
+base_dir = Path.cwd()
+dest_dir = base_dir.parent / FOLDER_NAME
+dest_dir.mkdir(parents=True, exist_ok=True)
 
+print(f"Folder for images and edited files: {dest_dir}")
+logging.info(f"Folder for images and edited files: {dest_dir}")
 
-# Write the content ("filedata") of each new modified file with "filename" as name, on the "folder_path"
-class FileWritter:
-    def write_file(self, folder_path, filename, filedata):
-        self.folder_path = folder_path
-        self.filename = filename
-        self.filedata = filedata
-        with open(self.folder_path + "\\" + self.filename, "w", encoding="utf-8") as file:
-            file.write(self.filedata)
+# --- Регекс (ловит и Постер: "URL", и markdown ![](...)) ---
+image_ext = r'(?:png|jpg|jpeg|gif|bmp|svg)'
+pattern = re.compile(
+    rf'''(?xi)
+    (?:                                             # Альтернатива 1: Постер: "URL" или Постер: URL
+        Постер:\s*["']?(?P<url_p>https?://[^\s"']*/(?P<end_p>[\w\-_%+=]+\.{image_ext}))["']?
+    )
+    |
+    (?:                                             # Альтернатива 2: markdown image ![alt](URL)
+        !\[[^\]]*\]\((?P<url_m>https?://[^\s\)]+/(?P<end_m>[\w\-_%+=]+\.{image_ext}))\)
+    )
+    '''
+)
 
+# --- Утилиты ---
+def random_prefix(n=8):
+    return ''.join(random.choice(string.hexdigits) for _ in range(n))
 
-# Download the images from the links obtained from the markdown files to the "destination folder"
-# The user-agent can be specified in order to circunvent some simple potential connection block from the
-# sources of the images
+# --- Создаёт словарь url -> локальное имя ---
+class UrlDictCreator:
+    def create(self, file_data):
+        url_map = {}
+        used_names = set()
+        try:
+            for m in pattern.finditer(file_data):
+                url = m.group('url_p') or m.group('url_m')
+                end = m.group('end_p') or m.group('end_m')
+                if not url or not end:
+                    continue
+                # Сохраняем оригинальное имя, добавляем префикс при конфликте
+                if end in used_names:
+                    name = f"{random_prefix(8)}_{end}"
+                else:
+                    name = end
+                used_names.add(name)
+                if url not in url_map:
+                    url_map[url] = name
+        except Exception:
+            logging.exception("Error while creating url map")
+        return url_map
+
+# --- Скачивает картинки ---
 class ImgDownloader:
     def download_images(self, url_dict, folder_path, user_agent):
-        self.url_dict = url_dict
-        self.folder_path = folder_path
-        self.user_agent = user_agent
-        for url, name in self.url_dict.items():
-            opener = urllib.request.build_opener()
-            opener.addheaders = [('User-agent', self.user_agent)]
-            urllib.request.install_opener(opener)
-            save_name = self.folder_path + "\\" + name
+        opener = urllib.request.build_opener()
+        opener.addheaders = [('User-agent', user_agent)]
+        urllib.request.install_opener(opener)
+        
+        for url, name in url_dict.items():
+            dest = os.path.join(folder_path, name)
             try:
-                urllib.request.urlretrieve(url, save_name)
+                print(f"Downloading {url} -> {dest}")
+                urllib.request.urlretrieve(url, dest)
+                print(f"Successfully downloaded {name}")
+            except urllib.error.URLError as e:
+                logging.error(f"URL Error for {url}: {e.reason}")
+                print(f"URL Error for {url}: {e.reason}")
+            except urllib.error.HTTPError as e:
+                logging.error(f"HTTP Error for {url}: {e.code} {e.reason}")
+                print(f"HTTP Error for {url}: {e.code} {e.reason}")
             except Exception as e:
-                logging.exception(f"Error when downloading {url}")
-            time.sleep(random.randint(0,2))
+                logging.exception(f"General error downloading {url}: {e}")
+                print(f"General error downloading {url}: {e}")
+            time.sleep(random.uniform(0.5, 1.5))
 
-
-# Open and reads the file received and returns the content
-class FileOpener:
-    def open_and_read(self, filename):
-        self.url_dict = {}
-        self.filename = filename
+# --- Запись файлов ---
+class FileWritter:
+    def write_file(self, folder_path, filename, filedata):
+        out_path = os.path.join(folder_path, filename)
         try:
-            with open(os.path.join(os.getcwd(), filename), "r", encoding="utf-8") as self.current_opened_file:
-                print(f"\nOpened file: {self.filename}")
-                logging.info(f"Opened file: {self.filename}\n")
-                return self.current_opened_file.read()
-        except Exception as e:
-            logging.exception(f"Error when opening file {self.filename}")
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(filedata)
+            logging.info(f"Wrote edited file: {out_path}")
+        except Exception:
+            logging.exception(f"Error writing file {out_path}")
 
-
-
-# Find(regex) URL's for images on the received "file_data" and creates a dictionary with the url's for later download as keys
-# and a random 10 digit number followed by the images names (something.jpg)
-# in order to save the files later and prevent name collisions
-class UrlDictCreator:
-    def create(self, regex, file_data, file_name):
-        self.file_name = file_name
-        self.url_dict = {}
-        self.regex = regex
-        self.file_data = file_data
-        try:
-            for url in re.findall(self.regex, self.file_data):
-                self.random_name = "".join([random.choice(string.hexdigits) for i in range(10)])
-                if url[0] not in self.url_dict.keys():
-                    self.url_dict[url[0]] = self.random_name + url[1]
-        except:
-            logging.exception("Error when trying to search url's and add them to dicionary")
-
-        return self.url_dict
-
-
-# Edit the markdown files, changing the url's links for a new name corresponding to the name of the local file
-# images that will be downloaded later
+# --- Редактор содержимого (заменяет URL на [[name]]) ---
 class FileDataEditor:
     def edit(self, file_data, url_dict, file_name):
-        self.file_name = file_name
-        self.url_dict = url_dict
-        self.file_data = file_data
-        for key, value in url_dict.items():
-            self.file_data = self.file_data.replace(key, value)
-            print(f"\nreplaced: {key}\nwith {value}\n on file {self.file_name}\n")
-            logging.info(f"replaced: {key}\nwith: {value}\non file: {self.file_name}\n")
+        try:
+            for url, name in url_dict.items():
+                replacement = f"[[{name}]]"
+                file_data = file_data.replace(url, replacement)
+                logging.info(f"Replaced {url} -> {replacement} in {file_name}")
+                print(f"Replaced {url} -> {replacement}")
+        except Exception:
+            logging.exception("Error while editing file data")
+        return file_data
 
-        return self.file_data
+# --- Открытие файла ---
+class FileOpener:
+    def open_and_read(self, filename):
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                logging.info(f"Opened {filename}")
+                return f.read()
+        except Exception:
+            logging.exception(f"Error opening {filename}")
+            return None
 
+# --- Main loop ---
+print("\nStarting processing markdown files...\n")
+# Инициализируем загрузчик
+downloader = ImgDownloader()
 
+for path in base_dir.glob("*.md"):
+    filename = path.name
+    stem = path.stem # имя файла без расширения
+    print(f"Processing {filename} ...")
 
-# Program start:
-print("\n\n\nStarting..\n")
-
-
-# Create new log file     
-logging.basicConfig(filename='Img_To_Local_Python.log', encoding='utf-8', filemode="w",   level=logging.DEBUG)
-
-# Defines the folder to write the new markdown files and the downloaded images
-folder_name = "External_Imgs_to_Local_Files"
-
-folder_path = os.path.abspath(os.path.join(os.getcwd(),os.pardir) + f"\/{folder_name}\/")
-
-
-# Create new folder to receive the downloaded imgs and edited MD files
-folder_creator = FolderCreator()
-folder_creator.create_folder(folder_name)
-logging.info(f"New folder created: {folder_path}\n")
-print(f"New folder created: {folder_path}")
-
-logging.info("to receive the imgs and edited markdown files\n")
-print("to receive the imgs and edited markdown files\n")
-
-
-# Regex that will be used to look for url's of images
-regex = r"(?:\(|\[)(?P<url>(?:https?\:(?:\/\/)?)(?:\w|\-|\_|\.|\?|\/)+?\/(?P<end>(?:\w|\-|\_)+\.(?:png|jpg|jpeg|gif|bmp|svg)))(?:\)|\])"
-
-# Loop throught every markdown file on this script folder
-for filename in os.listdir(os.getcwd()):
-    print("\n")
-
-    if filename[-3:] != ".md":
-        # log_file_creator.write(f"{filename} ignored (not '.md')\n")
-        logging.info(f"Skipped file: {filename}\n")
-        print(f"Skipped file: {filename}")
+    file_data = FileOpener().open_and_read(str(path))
+    if file_data is None:
+        print(f"Failed to read {filename}, skipping.")
         continue
 
-    # Open and read each file
-    file_opener = FileOpener()
-    file_data = file_opener.open_and_read(filename)
+    url_dict = UrlDictCreator().create(file_data)
+    if not url_dict:
+        logging.info(f"No image URLs found in {filename}")
+        print(f"No image URLs found in {filename}")
+        continue
 
-    # Create a dictionary of images URLs for each file
-    url_dict_creator = UrlDictCreator()
-    url_dict = url_dict_creator.create(regex, file_data, filename)
+    # --- создаём папку _resources/{stem} ---
+    resources_folder = dest_dir / "_resources" / stem
+    resources_folder.mkdir(parents=True, exist_ok=True)
 
-    # Edit the read content of each file, replacing the found imgs urls with local file names instead
-    file_data_editor = FileDataEditor()
-    edited_file_data = file_data_editor.edit(file_data, url_dict, filename)
+    # Заменяем ссылки в тексте (на _resources/{stem}/filename.ext)
+    edited_data = file_data
+    for url, name in url_dict.items():
+        replacement = f"[[_resources/{stem}/{name}]]"
+        edited_data = edited_data.replace(url, replacement)
+        logging.info(f"Replaced {url} -> {replacement} in {filename}")
+        print(f"Replaced {url} -> {replacement}")
 
-    # Download the images listed on the dictionary of found urls for each file
-    images_downloader = ImgDownloader()
-    user_agent = "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:40.0) Gecko/20100101 Firefox/40.1"
-    images_downloader.download_images(url_dict, folder_path, user_agent)
+    # Скачиваем картинки в _resources/{stem}
+    downloader.download_images(url_dict, str(resources_folder), USER_AGENT)
 
-    # Write the modified markdown files
-    if url_dict:
-        file_name_writter = FileWritter()
-        file_name_writter.write_file(folder_path,filename, edited_file_data)
-    
-    print(f"Closed file: {filename}")
-    logging.info(f"Closed file: {filename}\n")
+    # Сохраняем изменённый .md в External_Imgs_to_Local_Files
+    FileWritter().write_file(str(dest_dir), filename, edited_data)
 
-print("\n\n\nIf everything went OK, you can check your modified markdown")
-print("files and the downloaded images on the folder:")
-print(f"{folder_path}")
+    print(f"Finished {filename}\n")
 
-print(f"\nFor more info check the log file on \n{os.getcwd()}\\PythonObsidian.log")
+print("Done. Check folder:", dest_dir)
+print("Log file:", Path.cwd() / "Img_To_Local_Python.log")
 
 print("\nPress enter to close")
 
