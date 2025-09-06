@@ -29,16 +29,17 @@ dest_dir.mkdir(parents=True, exist_ok=True)
 print(f"Folder for images and edited files: {dest_dir}")
 logging.info(f"Folder for images and edited files: {dest_dir}")
 
-# --- Регекс (ловит и Постер: "URL", и markdown ![](...)) ---
-image_ext = r'(?:png|jpg|jpeg|gif|bmp|svg)'
+# --- Регекс (ловит Постер: "URL" и markdown ![](...)) ---
+# Обновленное регулярное выражение, чтобы захватить весь URL, 
+# включая те, у которых нет стандартного расширения файла.
 pattern = re.compile(
     rf'''(?xi)
     (?:                                             # Альтернатива 1: Постер: "URL" или Постер: URL
-        Постер:\s*["']?(?P<url_p>https?://[^\s"']*/(?P<end_p>[\w\-_%+=]+\.{image_ext}))["']?
+        Постер:\s*["']?(?P<url_p>https?://[^\s"']+)["']?
     )
     |
     (?:                                             # Альтернатива 2: markdown image ![alt](URL)
-        !\[[^\]]*\]\((?P<url_m>https?://[^\s\)]+/(?P<end_m>[\w\-_%+=]+\.{image_ext}))\)
+        !\[[^\]]*\]\((?P<url_m>https?://[^\s\)]+)\)
     )
     '''
 )
@@ -55,14 +56,14 @@ class UrlDictCreator:
         try:
             for m in pattern.finditer(file_data):
                 url = m.group('url_p') or m.group('url_m')
-                end = m.group('end_p') or m.group('end_m')
-                if not url or not end:
+                if not url:
                     continue
-                # Сохраняем оригинальное имя, добавляем префикс при конфликте
-                if end in used_names:
-                    name = f"{random_prefix(8)}_{end}"
-                else:
-                    name = end
+                
+                # Генерируем уникальное имя файла и добавляем расширение .jpeg
+                name = f"{random_prefix(8)}.jpeg"
+                while name in used_names:
+                    name = f"{random_prefix(8)}.jpeg"
+                
                 used_names.add(name)
                 if url not in url_map:
                     url_map[url] = name
@@ -110,7 +111,7 @@ class FileDataEditor:
     def edit(self, file_data, url_dict, file_name):
         try:
             for url, name in url_dict.items():
-                replacement = f"[[{name}]]"
+                replacement = f"[[_resources/{stem}/{name}]]"
                 file_data = file_data.replace(url, replacement)
                 logging.info(f"Replaced {url} -> {replacement} in {file_name}")
                 print(f"Replaced {url} -> {replacement}")
